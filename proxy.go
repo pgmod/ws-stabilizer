@@ -11,23 +11,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// readFromBackend читает сообщения из бэкенда и пересылает их клиенту
-func readFromBackend(backendConn *BackendConnection, clientConn *websocket.Conn, clientCtx context.Context, errCh chan<- error, wg *sync.WaitGroup) {
-	defer wg.Done()
-	defer func() {
-		if r := recover(); r != nil {
-			// Восстанавливаемся от паники, которая может возникнуть при чтении из закрытого соединения
-			if isContextDone(backendConn.ctx, clientCtx) {
-				return
-			}
-			select {
-			case errCh <- fmt.Errorf("backend read panic: %v", r):
-			case <-backendConn.ctx.Done():
-			case <-clientCtx.Done():
-			default:
-			}
-		}
-	}()
+// readFromBackendNoWait читает сообщения из бэкенда без WaitGroup
+func readFromBackendNoWait(backendConn *BackendConnection, clientConn *websocket.Conn, clientCtx context.Context, errCh chan<- error) {
 
 	for {
 		if isContextDone(backendConn.ctx, clientCtx) {
@@ -43,18 +28,7 @@ func readFromBackend(backendConn *BackendConnection, clientConn *websocket.Conn,
 			return
 		}
 
-		// Проверяем контекст перед установкой deadline
-		if isContextDone(backendConn.ctx, clientCtx) {
-			return
-		}
-
 		conn.SetReadDeadline(time.Now().Add(readDeadlineTimeout))
-
-		// Проверяем контекст перед чтением
-		if isContextDone(backendConn.ctx, clientCtx) {
-			return
-		}
-
 		mt, msg, err := conn.ReadMessage()
 		if err != nil {
 			if isContextDone(backendConn.ctx, clientCtx) {
@@ -68,14 +42,7 @@ func readFromBackend(backendConn *BackendConnection, clientConn *websocket.Conn,
 				continue
 			}
 
-			select {
-			case errCh <- fmt.Errorf("backend read: %w", err):
-			case <-backendConn.ctx.Done():
-				return
-			case <-clientCtx.Done():
-				return
-			default:
-			}
+			safeSendError(errCh, fmt.Errorf("backend read: %w", err), backendConn.ctx, clientCtx)
 			return
 		}
 
@@ -87,36 +54,14 @@ func readFromBackend(backendConn *BackendConnection, clientConn *websocket.Conn,
 			if isCloseError(err) {
 				return
 			}
-			select {
-			case errCh <- fmt.Errorf("client write: %w", err):
-			case <-backendConn.ctx.Done():
-				return
-			case <-clientCtx.Done():
-				return
-			default:
-			}
+			safeSendError(errCh, fmt.Errorf("client write: %w", err), backendConn.ctx, clientCtx)
 			return
 		}
 	}
 }
 
-// readFromClient читает сообщения от клиента и пересылает их в бэкенд
-func readFromClient(clientConn *websocket.Conn, backendConn *BackendConnection, clientCtx context.Context, errCh chan<- error, wg *sync.WaitGroup) {
-	defer wg.Done()
-	defer func() {
-		if r := recover(); r != nil {
-			// Восстанавливаемся от паники, которая может возникнуть при чтении из закрытого соединения
-			if isContextDone(backendConn.ctx, clientCtx) {
-				return
-			}
-			select {
-			case errCh <- fmt.Errorf("client read panic: %v", r):
-			case <-backendConn.ctx.Done():
-			case <-clientCtx.Done():
-			default:
-			}
-		}
-	}()
+// readFromClientNoWait читает сообщения от клиента без WaitGroup
+func readFromClientNoWait(clientConn *websocket.Conn, backendConn *BackendConnection, clientCtx context.Context, errCh chan<- error) {
 
 	for {
 		if isContextDone(backendConn.ctx, clientCtx) {
@@ -138,14 +83,7 @@ func readFromClient(clientConn *websocket.Conn, backendConn *BackendConnection, 
 				return
 			}
 
-			select {
-			case errCh <- fmt.Errorf("client read: %w", err):
-			case <-backendConn.ctx.Done():
-				return
-			case <-clientCtx.Done():
-				return
-			default:
-			}
+			safeSendError(errCh, fmt.Errorf("client read: %w", err), backendConn.ctx, clientCtx)
 			return
 		}
 
@@ -155,23 +93,11 @@ func readFromClient(clientConn *websocket.Conn, backendConn *BackendConnection, 
 			return
 		}
 
-		// Проверяем контекст перед записью
-		if isContextDone(backendConn.ctx, clientCtx) {
-			return
-		}
-
 		if err := conn.WriteMessage(mt, msg); err != nil {
 			if isContextDone(backendConn.ctx, clientCtx) {
 				return
 			}
-			select {
-			case errCh <- fmt.Errorf("backend write: %w", err):
-			case <-backendConn.ctx.Done():
-				return
-			case <-clientCtx.Done():
-				return
-			default:
-			}
+			safeSendError(errCh, fmt.Errorf("backend write: %w", err), backendConn.ctx, clientCtx)
 			return
 		}
 	}
@@ -184,7 +110,6 @@ func handleReconnection(
 	clientCtx context.Context,
 	r *http.Request,
 	errCh chan error,
-	wg *sync.WaitGroup,
 ) {
 	defer func() {
 		backendConn.close()
@@ -214,9 +139,11 @@ func handleReconnection(
 		}
 
 		sendEvent(clientConn, connectedEvent)
-		wg.Add(2)
-		go readFromBackend(backendConn, clientConn, clientCtx, errCh, wg)
-		go readFromClient(clientConn, backendConn, clientCtx, errCh, wg)
+		
+		// Запускаем новые горутины чтения без WaitGroup
+		// Они завершатся автоматически при отмене контекста или ошибке
+		go readFromBackendNoWait(backendConn, clientConn, clientCtx, errCh)
+		go readFromClientNoWait(clientConn, backendConn, clientCtx, errCh)
 	}
 }
 
@@ -257,16 +184,32 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	sendEvent(clientConn, connectedEvent)
 
 	errCh := make(chan error, 2)
-	var wg sync.WaitGroup
+	var readWg sync.WaitGroup
+	var reconnectWg sync.WaitGroup
 
 	// Запускаем горутины для чтения
-	wg.Add(2)
-	go readFromBackend(backend, clientConn, clientCtx, errCh, &wg)
-	go readFromClient(clientConn, backend, clientCtx, errCh, &wg)
+	readWg.Add(2)
+	go func() {
+		defer readWg.Done()
+		readFromBackendNoWait(backend, clientConn, clientCtx, errCh)
+	}()
+	go func() {
+		defer readWg.Done()
+		readFromClientNoWait(clientConn, backend, clientCtx, errCh)
+	}()
 
 	// Запускаем горутину для обработки переподключений
-	go handleReconnection(backend, clientConn, clientCtx, r, errCh, &wg)
+	reconnectWg.Add(1)
+	go func() {
+		defer reconnectWg.Done()
+		handleReconnection(backend, clientConn, clientCtx, r, errCh)
+	}()
 
-	// Ждем завершения всех горутин
-	wg.Wait()
+	// Ждем завершения начальных горутин чтения
+	readWg.Wait()
+	// Закрываем канал ошибок, чтобы handleReconnection завершился
+	close(errCh)
+	// Ждем завершения горутины переподключения
+	reconnectWg.Wait()
 }
+

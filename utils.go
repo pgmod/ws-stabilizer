@@ -67,3 +67,29 @@ func sendEvent(conn *websocket.Conn, event string) {
 	conn.SetWriteDeadline(time.Time{})
 }
 
+// safeSendError безопасно отправляет ошибку в канал, защищаясь от паники при закрытом канале
+func safeSendError(errCh chan<- error, err error, ctxs ...context.Context) {
+	// Проверяем контексты перед отправкой
+	for _, ctx := range ctxs {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+	}
+	
+	// Пытаемся отправить ошибку с защитой от паники
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Канал закрыт, игнорируем ошибку
+			}
+		}()
+		select {
+		case errCh <- err:
+		default:
+			// Канал полон или закрыт, игнорируем ошибку
+		}
+	}()
+}
+
