@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  ws-stabilizer:
+    build:
+      context: .
+      dockerfile: dockerfile
+    container_name: ws-stabilizer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Можно использовать переменные окружения, если нужно
+      - TZ=Europe/Moscow
+    command:
+      - "-listen"
+      - ":8080"
+      - "-backend"
+      - "ws://backend:80/api/ws"
+      - "-dial-timeout"
+      - "5s"
+      - "-retry-backoff"
+      - "200ms"
+    # Раскомментируйте, если нужно подключиться к внешнему бэкенду
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
+    networks:
+      - ws-network
+    # Healthcheck отключен, так как WebSocket сервер не отвечает на HTTP GET запросы
+    # Можно использовать внешний мониторинг или убрать эту секцию
+    # healthcheck:
+    #   test: ["CMD-SHELL", "nc -z localhost 8080 || exit 1"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 10s
+
+  # Пример бэкенд-сервиса (раскомментируйте, если нужен тестовый бэкенд)
+  # backend:
+  #   image: nginx:alpine
+  #   container_name: ws-backend
+  #   ports:
+  #     - "80:80"
+  #   networks:
+  #     - ws-network
+
+networks:
+  ws-network:
+    driver: bridge
+

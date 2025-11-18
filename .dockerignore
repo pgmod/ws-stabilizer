@@ -1,0 +1,31 @@
+# Игнорируем бинарники
+*.exe
+*.exe~
+
+# Игнорируем Git
+.git
+.gitignore
+
+# Игнорируем Docker файлы
+dockerfile
+compose.yml
+.dockerignore
+
+# Игнорируем IDE файлы
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Игнорируем документацию
+README.md
+*.md
+
+# Игнорируем тесты (если будут)
+*_test.go
+
+# Игнорируем временные файлы
+*.tmp
+*.log
+
