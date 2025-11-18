@@ -77,7 +77,7 @@ func safeSendError(errCh chan<- error, err error, ctxs ...context.Context) {
 		default:
 		}
 	}
-	
+
 	// Пытаемся отправить ошибку с защитой от паники
 	func() {
 		defer func() {
@@ -92,4 +92,3 @@ func safeSendError(errCh chan<- error, err error, ctxs ...context.Context) {
 		}
 	}()
 }
-

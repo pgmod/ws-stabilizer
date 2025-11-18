@@ -13,6 +13,12 @@ import (
 
 // readFromBackendNoWait читает сообщения из бэкенда без WaitGroup
 func readFromBackendNoWait(backendConn *BackendConnection, clientConn *websocket.Conn, clientCtx context.Context, errCh chan<- error) {
+	defer func() {
+		if r := recover(); r != nil {
+			// Защита от паники при чтении из закрытого соединения
+			safeSendError(errCh, fmt.Errorf("backend read panic: %v", r), backendConn.ctx, clientCtx)
+		}
+	}()
 
 	for {
 		if isContextDone(backendConn.ctx, clientCtx) {
@@ -28,8 +34,20 @@ func readFromBackendNoWait(backendConn *BackendConnection, clientConn *websocket
 			return
 		}
 
-		conn.SetReadDeadline(time.Now().Add(readDeadlineTimeout))
-		mt, msg, err := conn.ReadMessage()
+		// Защищаем чтение от паники
+		var mt int
+		var msg []byte
+		var err error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("read panic: %v", r)
+				}
+			}()
+			conn.SetReadDeadline(time.Now().Add(readDeadlineTimeout))
+			mt, msg, err = conn.ReadMessage()
+		}()
+
 		if err != nil {
 			if isContextDone(backendConn.ctx, clientCtx) {
 				return
@@ -62,14 +80,32 @@ func readFromBackendNoWait(backendConn *BackendConnection, clientConn *websocket
 
 // readFromClientNoWait читает сообщения от клиента без WaitGroup
 func readFromClientNoWait(clientConn *websocket.Conn, backendConn *BackendConnection, clientCtx context.Context, errCh chan<- error) {
+	defer func() {
+		if r := recover(); r != nil {
+			// Защита от паники при чтении из закрытого соединения
+			safeSendError(errCh, fmt.Errorf("client read panic: %v", r), backendConn.ctx, clientCtx)
+		}
+	}()
 
 	for {
 		if isContextDone(backendConn.ctx, clientCtx) {
 			return
 		}
 
-		clientConn.SetReadDeadline(time.Now().Add(readDeadlineTimeout))
-		mt, msg, err := clientConn.ReadMessage()
+		// Защищаем чтение от паники
+		var mt int
+		var msg []byte
+		var err error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("read panic: %v", r)
+				}
+			}()
+			clientConn.SetReadDeadline(time.Now().Add(readDeadlineTimeout))
+			mt, msg, err = clientConn.ReadMessage()
+		}()
+
 		if err != nil {
 			if isContextDone(backendConn.ctx, clientCtx) {
 				return
@@ -93,11 +129,21 @@ func readFromClientNoWait(clientConn *websocket.Conn, backendConn *BackendConnec
 			return
 		}
 
-		if err := conn.WriteMessage(mt, msg); err != nil {
+		// Защищаем запись от паники
+		writeErr := func() error {
+			defer func() {
+				if r := recover(); r != nil {
+					// Игнорируем панику при записи в закрытое соединение
+				}
+			}()
+			return conn.WriteMessage(mt, msg)
+		}()
+
+		if writeErr != nil {
 			if isContextDone(backendConn.ctx, clientCtx) {
 				return
 			}
-			safeSendError(errCh, fmt.Errorf("backend write: %w", err), backendConn.ctx, clientCtx)
+			safeSendError(errCh, fmt.Errorf("backend write: %w", writeErr), backendConn.ctx, clientCtx)
 			return
 		}
 	}
