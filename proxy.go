@@ -14,6 +14,20 @@ import (
 // readFromBackend читает сообщения из бэкенда и пересылает их клиенту
 func readFromBackend(backendConn *BackendConnection, clientConn *websocket.Conn, clientCtx context.Context, errCh chan<- error, wg *sync.WaitGroup) {
 	defer wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			// Восстанавливаемся от паники, которая может возникнуть при чтении из закрытого соединения
+			if isContextDone(backendConn.ctx, clientCtx) {
+				return
+			}
+			select {
+			case errCh <- fmt.Errorf("backend read panic: %v", r):
+			case <-backendConn.ctx.Done():
+			case <-clientCtx.Done():
+			default:
+			}
+		}
+	}()
 
 	for {
 		if isContextDone(backendConn.ctx, clientCtx) {
@@ -29,7 +43,18 @@ func readFromBackend(backendConn *BackendConnection, clientConn *websocket.Conn,
 			return
 		}
 
+		// Проверяем контекст перед установкой deadline
+		if isContextDone(backendConn.ctx, clientCtx) {
+			return
+		}
+
 		conn.SetReadDeadline(time.Now().Add(readDeadlineTimeout))
+
+		// Проверяем контекст перед чтением
+		if isContextDone(backendConn.ctx, clientCtx) {
+			return
+		}
+
 		mt, msg, err := conn.ReadMessage()
 		if err != nil {
 			if isContextDone(backendConn.ctx, clientCtx) {
@@ -78,6 +103,20 @@ func readFromBackend(backendConn *BackendConnection, clientConn *websocket.Conn,
 // readFromClient читает сообщения от клиента и пересылает их в бэкенд
 func readFromClient(clientConn *websocket.Conn, backendConn *BackendConnection, clientCtx context.Context, errCh chan<- error, wg *sync.WaitGroup) {
 	defer wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			// Восстанавливаемся от паники, которая может возникнуть при чтении из закрытого соединения
+			if isContextDone(backendConn.ctx, clientCtx) {
+				return
+			}
+			select {
+			case errCh <- fmt.Errorf("client read panic: %v", r):
+			case <-backendConn.ctx.Done():
+			case <-clientCtx.Done():
+			default:
+			}
+		}
+	}()
 
 	for {
 		if isContextDone(backendConn.ctx, clientCtx) {
@@ -113,6 +152,11 @@ func readFromClient(clientConn *websocket.Conn, backendConn *BackendConnection, 
 		clientConn.SetReadDeadline(time.Time{})
 		conn := backendConn.getConn()
 		if conn == nil {
+			return
+		}
+
+		// Проверяем контекст перед записью
+		if isContextDone(backendConn.ctx, clientCtx) {
 			return
 		}
 
@@ -226,4 +270,3 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	// Ждем завершения всех горутин
 	wg.Wait()
 }
-

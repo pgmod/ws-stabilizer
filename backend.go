@@ -52,11 +52,22 @@ func (bc *BackendConnection) close() {
 }
 
 func (bc *BackendConnection) replace(conn *websocket.Conn) {
-	oldConn := bc.getConn()
+	bc.mu.Lock()
+	oldConn := bc.conn
+	// Отменяем старый контекст, чтобы сигнализировать горутинам о необходимости остановиться
 	bc.cancel()
+	bc.mu.Unlock()
+	
+	// Даем время горутинам для остановки перед закрытием соединения
 	time.Sleep(goroutineShutdownDelay)
+	
+	bc.mu.Lock()
+	// Создаем новый контекст для нового соединения
 	bc.ctx, bc.cancel = context.WithCancel(context.Background())
-	bc.setConn(conn)
+	bc.conn = conn
+	bc.mu.Unlock()
+	
+	// Закрываем старое соединение после того, как горутины должны были остановиться
 	if oldConn != nil {
 		_ = oldConn.Close()
 	}
