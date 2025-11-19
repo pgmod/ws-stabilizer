@@ -36,13 +36,21 @@ func (bc *BackendConnection) getConn() *websocket.Conn {
 }
 
 func (bc *BackendConnection) close() {
+	bc.closeWithCode(websocket.CloseNormalClosure, "")
+}
+
+func (bc *BackendConnection) closeWithCode(code int, text string) {
 	bc.cancel()
 	bc.mu.Lock()
+	defer bc.mu.Unlock()
 	if bc.conn != nil {
+		// Отправляем Close frame с минимальным таймаутом для быстрого закрытия
+		msg := websocket.FormatCloseMessage(code, text)
+		deadline := time.Now().Add(100 * time.Millisecond)
+		_ = bc.conn.WriteControl(websocket.CloseMessage, msg, deadline)
 		_ = bc.conn.Close()
 		bc.conn = nil
 	}
-	bc.mu.Unlock()
 }
 
 func (bc *BackendConnection) replace(conn *websocket.Conn) {

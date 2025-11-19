@@ -53,7 +53,8 @@ func readFromBackendNoWait(backendConn *BackendConnection, clientConn *websocket
 }
 
 // readFromClientNoWait читает сообщения от клиента без WaitGroup
-func readFromClientNoWait(clientConn *websocket.Conn, backendConn *BackendConnection, clientCtx context.Context, errCh chan<- error) {
+// Возвращает true, если клиент отключился
+func readFromClientNoWait(clientConn *websocket.Conn, backendConn *BackendConnection, clientCtx context.Context, errCh chan<- error) bool {
 	defer func() {
 		if r := recover(); r != nil {
 			safeSendError(errCh, fmt.Errorf("client read panic: %v", r), backendConn.ctx, clientCtx)
@@ -62,36 +63,36 @@ func readFromClientNoWait(clientConn *websocket.Conn, backendConn *BackendConnec
 
 	for {
 		if isContextDone(backendConn.ctx, clientCtx) {
-			return
+			return false
 		}
 
 		// Защищаем чтение от паники
 		mt, msg, err := readMessageSafe(clientConn)
 		if err != nil {
 			if isContextDone(backendConn.ctx, clientCtx) {
-				return
+				return false
 			}
 			if isTimeoutError(err) {
 				continue
 			}
 			if isCloseError(err) {
-				return
+				return true // Клиент отключился
 			}
 			safeSendError(errCh, fmt.Errorf("client read: %w", err), backendConn.ctx, clientCtx)
-			return
+			return false
 		}
 
 		conn := backendConn.getConn()
 		if conn == nil {
-			return
+			return false
 		}
 
 		if err := writeMessageSafe(conn, mt, msg); err != nil {
 			if isContextDone(backendConn.ctx, clientCtx) {
-				return
+				return false
 			}
 			safeSendError(errCh, fmt.Errorf("backend write: %w", err), backendConn.ctx, clientCtx)
-			return
+			return false
 		}
 	}
 }
@@ -159,7 +160,6 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	backend := newBackendConnection(backendConn)
-	defer backend.close()
 
 	clientCtx, clientCancel := context.WithCancel(context.Background())
 	defer clientCancel()
@@ -169,6 +169,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	errCh := make(chan error, 2)
 	var readWg sync.WaitGroup
 	var reconnectWg sync.WaitGroup
+	clientDisconnected := make(chan bool, 1)
 
 	// Запускаем горутины для чтения
 	readWg.Add(2)
@@ -178,7 +179,14 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	}()
 	go func() {
 		defer readWg.Done()
-		readFromClientNoWait(clientConn, backend, clientCtx, errCh)
+		if readFromClientNoWait(clientConn, backend, clientCtx, errCh) {
+			// Клиент отключился - сразу закрываем бэкенд с кодом GoingAway
+			backend.closeWithCode(websocket.CloseGoingAway, "client disconnected")
+			select {
+			case clientDisconnected <- true:
+			default:
+			}
+		}
 	}()
 
 	// Запускаем горутину для обработки переподключений
@@ -189,6 +197,16 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	readWg.Wait()
+
+	// Если клиент не отключился явно, закрываем бэкенд обычным способом
+	select {
+	case <-clientDisconnected:
+		// Уже закрыто с кодом GoingAway
+	default:
+		// Обычное закрытие
+		backend.close()
+	}
+
 	close(errCh)
 	reconnectWg.Wait()
 }
