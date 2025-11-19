@@ -96,14 +96,14 @@ func readFromClientNoWait(clientConn *websocket.Conn, backendConn *BackendConnec
 		var mt int
 		var msg []byte
 		var err error
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					err = fmt.Errorf("read panic: %v", r)
-				}
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("read panic: %v", r)
+			}
+			func() {
+				clientConn.SetReadDeadline(time.Now().Add(readDeadlineTimeout))
+				mt, msg, err = clientConn.ReadMessage()
 			}()
-			clientConn.SetReadDeadline(time.Now().Add(readDeadlineTimeout))
-			mt, msg, err = clientConn.ReadMessage()
 		}()
 
 		if err != nil {
@@ -185,7 +185,7 @@ func handleReconnection(
 		}
 
 		sendEvent(clientConn, connectedEvent)
-		
+
 		// Запускаем новые горутины чтения без WaitGroup
 		// Они завершатся автоматически при отмене контекста или ошибке
 		go readFromBackendNoWait(backendConn, clientConn, clientCtx, errCh)
@@ -258,4 +258,3 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	// Ждем завершения горутины переподключения
 	reconnectWg.Wait()
 }
-
