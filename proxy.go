@@ -15,7 +15,6 @@ import (
 func readFromBackendNoWait(backendConn *BackendConnection, clientConn *websocket.Conn, clientCtx context.Context, errCh chan<- error) {
 	defer func() {
 		if r := recover(); r != nil {
-			// Защита от паники при чтении из закрытого соединения
 			safeSendError(errCh, fmt.Errorf("backend read panic: %v", r), backendConn.ctx, clientCtx)
 		}
 	}()
@@ -30,46 +29,21 @@ func readFromBackendNoWait(backendConn *BackendConnection, clientConn *websocket
 			return
 		}
 
-		if isContextDone(backendConn.ctx, clientCtx) {
-			return
-		}
-
 		// Защищаем чтение от паники
-		var mt int
-		var msg []byte
-		var err error
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					err = fmt.Errorf("read panic: %v", r)
-				}
-			}()
-			conn.SetReadDeadline(time.Now().Add(readDeadlineTimeout))
-			mt, msg, err = conn.ReadMessage()
-		}()
-
+		mt, msg, err := readMessageSafe(conn)
 		if err != nil {
 			if isContextDone(backendConn.ctx, clientCtx) {
 				return
 			}
-
 			if isTimeoutError(err) {
-				if isContextDone(backendConn.ctx, clientCtx) {
-					return
-				}
 				continue
 			}
-
 			safeSendError(errCh, fmt.Errorf("backend read: %w", err), backendConn.ctx, clientCtx)
 			return
 		}
 
-		conn.SetReadDeadline(time.Time{})
-		if err := clientConn.WriteMessage(mt, msg); err != nil {
-			if isContextDone(backendConn.ctx, clientCtx) {
-				return
-			}
-			if isCloseError(err) {
+		if err := writeMessageSafe(clientConn, mt, msg); err != nil {
+			if isContextDone(backendConn.ctx, clientCtx) || isCloseError(err) {
 				return
 			}
 			safeSendError(errCh, fmt.Errorf("client write: %w", err), backendConn.ctx, clientCtx)
@@ -82,7 +56,6 @@ func readFromBackendNoWait(backendConn *BackendConnection, clientConn *websocket
 func readFromClientNoWait(clientConn *websocket.Conn, backendConn *BackendConnection, clientCtx context.Context, errCh chan<- error) {
 	defer func() {
 		if r := recover(); r != nil {
-			// Защита от паники при чтении из закрытого соединения
 			safeSendError(errCh, fmt.Errorf("client read panic: %v", r), backendConn.ctx, clientCtx)
 		}
 	}()
@@ -93,57 +66,31 @@ func readFromClientNoWait(clientConn *websocket.Conn, backendConn *BackendConnec
 		}
 
 		// Защищаем чтение от паники
-		var mt int
-		var msg []byte
-		var err error
-		defer func() {
-			if r := recover(); r != nil {
-				err = fmt.Errorf("read panic: %v", r)
-			}
-			func() {
-				clientConn.SetReadDeadline(time.Now().Add(readDeadlineTimeout))
-				mt, msg, err = clientConn.ReadMessage()
-			}()
-		}()
-
+		mt, msg, err := readMessageSafe(clientConn)
 		if err != nil {
 			if isContextDone(backendConn.ctx, clientCtx) {
 				return
 			}
-
 			if isTimeoutError(err) {
 				continue
 			}
-
 			if isCloseError(err) {
 				return
 			}
-
 			safeSendError(errCh, fmt.Errorf("client read: %w", err), backendConn.ctx, clientCtx)
 			return
 		}
 
-		clientConn.SetReadDeadline(time.Time{})
 		conn := backendConn.getConn()
 		if conn == nil {
 			return
 		}
 
-		// Защищаем запись от паники
-		writeErr := func() error {
-			defer func() {
-				if r := recover(); r != nil {
-					// Игнорируем панику при записи в закрытое соединение
-				}
-			}()
-			return conn.WriteMessage(mt, msg)
-		}()
-
-		if writeErr != nil {
+		if err := writeMessageSafe(conn, mt, msg); err != nil {
 			if isContextDone(backendConn.ctx, clientCtx) {
 				return
 			}
-			safeSendError(errCh, fmt.Errorf("backend write: %w", writeErr), backendConn.ctx, clientCtx)
+			safeSendError(errCh, fmt.Errorf("backend write: %w", err), backendConn.ctx, clientCtx)
 			return
 		}
 	}
@@ -202,12 +149,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	log.Printf("client connected: %s", clientConn.RemoteAddr())
 
 	var closeOnce sync.Once
-	closeClient := func() {
-		closeOnce.Do(func() {
-			_ = clientConn.Close()
-		})
-	}
-	defer closeClient()
+	defer closeOnce.Do(func() { _ = clientConn.Close() })
 
 	// Подключаемся к бэкенду
 	backendConn, err := dialBackend(backendURL, dialTimeout, r)
@@ -215,11 +157,6 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 		sendEvent(clientConn, disconnectedEvent)
 		return
 	}
-	defer func() {
-		if backendConn != nil {
-			_ = backendConn.Close()
-		}
-	}()
 
 	backend := newBackendConnection(backendConn)
 	defer backend.close()
@@ -251,10 +188,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 		handleReconnection(backend, clientConn, clientCtx, r, errCh)
 	}()
 
-	// Ждем завершения начальных горутин чтения
 	readWg.Wait()
-	// Закрываем канал ошибок, чтобы handleReconnection завершился
 	close(errCh)
-	// Ждем завершения горутины переподключения
 	reconnectWg.Wait()
 }

@@ -9,10 +9,9 @@ import (
 
 const (
 	// Timeouts and intervals
-	readDeadlineTimeout    = 30 * time.Second
-	writeDeadlineTimeout   = 5 * time.Second
-	goroutineShutdownDelay = 10 * time.Millisecond
-	serverShutdownTimeout  = 5 * time.Second
+	readDeadlineTimeout   = 30 * time.Second
+	writeDeadlineTimeout  = 5 * time.Second
+	serverShutdownTimeout = 5 * time.Second
 )
 
 var (

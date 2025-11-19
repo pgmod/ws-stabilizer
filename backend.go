@@ -35,12 +35,6 @@ func (bc *BackendConnection) getConn() *websocket.Conn {
 	return bc.conn
 }
 
-func (bc *BackendConnection) setConn(conn *websocket.Conn) {
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
-	bc.conn = conn
-}
-
 func (bc *BackendConnection) close() {
 	bc.cancel()
 	bc.mu.Lock()
@@ -52,11 +46,14 @@ func (bc *BackendConnection) close() {
 }
 
 func (bc *BackendConnection) replace(conn *websocket.Conn) {
-	oldConn := bc.getConn()
+	bc.mu.Lock()
+	oldConn := bc.conn
+	bc.conn = conn
+	bc.mu.Unlock()
+	
 	bc.cancel()
-	time.Sleep(goroutineShutdownDelay)
 	bc.ctx, bc.cancel = context.WithCancel(context.Background())
-	bc.setConn(conn)
+	
 	if oldConn != nil {
 		_ = oldConn.Close()
 	}
@@ -64,7 +61,6 @@ func (bc *BackendConnection) replace(conn *websocket.Conn) {
 
 // dialBackend устанавливает соединение с бэкендом
 func dialBackend(backendURL string, timeout time.Duration, r *http.Request) (*websocket.Conn, error) {
-	header := copyHeaders(r)
 	dialer := websocket.Dialer{
 		HandshakeTimeout: timeout,
 		NetDial: func(network, addr string) (net.Conn, error) {
@@ -75,7 +71,7 @@ func dialBackend(backendURL string, timeout time.Duration, r *http.Request) (*we
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	conn, resp, err := dialer.DialContext(ctx, backendURL, header)
+	conn, resp, err := dialer.DialContext(ctx, backendURL, copyHeaders(r))
 	if err != nil {
 		if resp != nil {
 			log.Printf("backend dial failed: %s %v", resp.Status, err)

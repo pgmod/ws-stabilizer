@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -13,10 +14,8 @@ import (
 // isContextDone проверяет, отменен ли хотя бы один из контекстов
 func isContextDone(ctxs ...context.Context) bool {
 	for _, ctx := range ctxs {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return true
-		default:
 		}
 	}
 	return false
@@ -56,39 +55,64 @@ func isCloseError(err error) bool {
 	return websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure)
 }
 
+// readMessageSafe безопасно читает сообщение с защитой от паники
+func readMessageSafe(conn *websocket.Conn) (int, []byte, error) {
+	var mt int
+	var msg []byte
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("read panic: %v", r)
+			}
+		}()
+		conn.SetReadDeadline(time.Now().Add(readDeadlineTimeout))
+		mt, msg, err = conn.ReadMessage()
+	}()
+	if err == nil {
+		conn.SetReadDeadline(time.Time{})
+	}
+	return mt, msg, err
+}
+
+// writeMessageSafe безопасно записывает сообщение с защитой от паники
+func writeMessageSafe(conn *websocket.Conn, messageType int, data []byte) error {
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("write panic: %v", r)
+			}
+		}()
+		conn.SetWriteDeadline(time.Now().Add(writeDeadlineTimeout))
+		err = conn.WriteMessage(messageType, data)
+	}()
+	if err == nil {
+		conn.SetWriteDeadline(time.Time{})
+	}
+	return err
+}
+
 // sendEvent отправляет событие клиенту
 func sendEvent(conn *websocket.Conn, event string) {
-	conn.SetWriteDeadline(time.Now().Add(writeDeadlineTimeout))
-	err := conn.WriteMessage(websocket.TextMessage, []byte(event))
-	if err != nil {
-		// Игнорируем ошибки записи - соединение может быть уже закрыто
-		return
-	}
-	conn.SetWriteDeadline(time.Time{})
+	_ = writeMessageSafe(conn, websocket.TextMessage, []byte(event))
 }
 
 // safeSendError безопасно отправляет ошибку в канал, защищаясь от паники при закрытом канале
 func safeSendError(errCh chan<- error, err error, ctxs ...context.Context) {
-	// Проверяем контексты перед отправкой
-	for _, ctx := range ctxs {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
+	if isContextDone(ctxs...) {
+		return
 	}
 
-	// Пытаемся отправить ошибку с защитой от паники
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				// Канал закрыт, игнорируем ошибку
-			}
-		}()
-		select {
-		case errCh <- err:
-		default:
-			// Канал полон или закрыт, игнорируем ошибку
+	defer func() {
+		if r := recover(); r != nil {
+			// Канал закрыт, игнорируем ошибку
 		}
 	}()
+
+	select {
+	case errCh <- err:
+	default:
+		// Канал полон или закрыт, игнорируем ошибку
+	}
 }
