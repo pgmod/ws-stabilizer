@@ -70,6 +70,7 @@ func readFromClientNoWait(clientConn *websocket.Conn, backendConn *BackendConnec
 		// Защищаем чтение от паники
 		mt, msg, err := readMessageSafe(clientConn)
 		if err != nil {
+			log.Printf("client read: %v, %v, %v", mt, msg, err)
 			if isContextDone(backendConn.ctx, clientCtx) {
 				return false
 			}
