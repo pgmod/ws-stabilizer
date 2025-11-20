@@ -204,8 +204,9 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer readWg.Done()
 		if readFromClientNoWait(clientConn, backend, clientCtx, errCh) {
-			// Клиент отключился - сразу закрываем бэкенд с кодом GoingAway
-			// Убрано избыточное логирование для снижения нагрузки
+			// Клиент отключился - сразу отменяем контекст и закрываем бэкенд
+			// Это предотвратит ненужные переподключения в handleReconnection
+			clientCancel()
 			backend.closeWithCode(websocket.CloseGoingAway, "client disconnected")
 			select {
 			case clientDisconnected <- true:
@@ -223,23 +224,17 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 
 	readWg.Wait()
 
-	// Отменяем контекст клиента, чтобы handleReconnection знал, что клиент отключился
-	// Это должно быть сделано ДО закрытия errCh, чтобы предотвратить ненужные переподключения
-	clientCancel()
-
-	// Если клиент не отключился явно, закрываем бэкенд обычным способом
+	// Если контекст еще не отменен (клиент не отключился явно), отменяем его сейчас
+	// и закрываем бэкенд обычным способом
 	select {
 	case <-clientDisconnected:
-		log.Printf("client disconnected, closing backend")
-		// Уже закрыто с кодом GoingAway
+		// Контекст уже отменен и бэкенд закрыт с кодом GoingAway
 	default:
-		log.Printf("client not disconnected, closing backend")
-		// Обычное закрытие
+		// Клиент не отключился явно - отменяем контекст и закрываем бэкенд
+		clientCancel()
 		backend.close()
 	}
 
 	close(errCh)
-	log.Printf("waiting for reconnectWg")
 	reconnectWg.Wait()
-	log.Printf("reconnectWg done")
 }
