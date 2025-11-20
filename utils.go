@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -52,7 +53,13 @@ func isTimeoutError(err error) bool {
 
 // isCloseError проверяет, является ли ошибка нормальным закрытием соединения
 func isCloseError(err error) bool {
-	return websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure)
+	log.Printf("isCloseError: %v", err)
+	return websocket.IsCloseError(err,
+		websocket.CloseNormalClosure,
+		websocket.CloseGoingAway,
+		websocket.CloseNoStatusReceived,
+		websocket.CloseAbnormalClosure,
+	)
 }
 
 // readMessageSafe безопасно читает сообщение с защитой от паники
