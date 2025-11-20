@@ -126,6 +126,12 @@ func handleReconnection(
 			return
 		}
 
+		// Проверяем контекст перед заменой соединения
+		if isContextDone(clientCtx) {
+			_ = newConn.Close()
+			return
+		}
+
 		// Заменяем соединение (это закроет старое и отменит контекст)
 		backendConn.replace(newConn)
 
@@ -216,6 +222,10 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	readWg.Wait()
+
+	// Отменяем контекст клиента, чтобы handleReconnection знал, что клиент отключился
+	// Это должно быть сделано ДО закрытия errCh, чтобы предотвратить ненужные переподключения
+	clientCancel()
 
 	// Если клиент не отключился явно, закрываем бэкенд обычным способом
 	select {
