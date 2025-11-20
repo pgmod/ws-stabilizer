@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -142,12 +143,28 @@ func handleReconnection(
 }
 
 func handleWS(w http.ResponseWriter, r *http.Request) {
+	// Проверка лимита соединений
+	if maxConnections > 0 {
+		current := atomic.LoadInt64(&activeConnections)
+		if current >= int64(maxConnections) {
+			log.Printf("max connections reached: %d/%d", current, maxConnections)
+			http.Error(w, "Service temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+	}
+
 	clientConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("upgrade failed: %v", err)
 		return
 	}
-	log.Printf("client connected: %s", clientConn.RemoteAddr())
+
+	// Увеличиваем счетчик активных соединений
+	atomic.AddInt64(&activeConnections, 1)
+	defer atomic.AddInt64(&activeConnections, -1)
+
+	// Логируем только при необходимости (можно убрать для production)
+	log.Printf("active connections: %d", atomic.LoadInt64(&activeConnections))
 
 	var closeOnce sync.Once
 	defer closeOnce.Do(func() { _ = clientConn.Close() })
@@ -166,7 +183,8 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 
 	sendEvent(clientConn, connectedEvent)
 
-	errCh := make(chan error, 2)
+	// Увеличенный буфер для канала ошибок (лучше для высокой нагрузки)
+	errCh := make(chan error, 40)
 	var readWg sync.WaitGroup
 	var reconnectWg sync.WaitGroup
 	clientDisconnected := make(chan bool, 1)
@@ -181,6 +199,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 		defer readWg.Done()
 		if readFromClientNoWait(clientConn, backend, clientCtx, errCh) {
 			// Клиент отключился - сразу закрываем бэкенд с кодом GoingAway
+			// Убрано избыточное логирование для снижения нагрузки
 			backend.closeWithCode(websocket.CloseGoingAway, "client disconnected")
 			select {
 			case clientDisconnected <- true:

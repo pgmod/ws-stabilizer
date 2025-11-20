@@ -16,6 +16,9 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+// Счетчик активных соединений
+var activeConnections int64
+
 func main() {
 	flag.Parse()
 
@@ -32,7 +35,14 @@ func main() {
 
 	http.HandleFunc("/", handleWS)
 
-	srv := &http.Server{Addr: listenAddr}
+	// Настройка HTTP сервера для высокой нагрузки
+	srv := &http.Server{
+		Addr:           listenAddr,
+		ReadTimeout:    httpReadTimeout,
+		WriteTimeout:   httpWriteTimeout,
+		IdleTimeout:    httpIdleTimeout,
+		MaxHeaderBytes: maxHeaderBytes,
+	}
 
 	go func() {
 		log.Printf("WS proxy listening on %s -> backend %s", listenAddr, backendURL)

@@ -51,6 +51,7 @@ func (bc *BackendConnection) closeWithCode(code int, text string) {
 		_ = bc.conn.Close()
 		bc.conn = nil
 	}
+	// Убрано избыточное логирование закрытий для снижения нагрузки
 }
 
 func (bc *BackendConnection) replace(conn *websocket.Conn) {
@@ -58,10 +59,10 @@ func (bc *BackendConnection) replace(conn *websocket.Conn) {
 	oldConn := bc.conn
 	bc.conn = conn
 	bc.mu.Unlock()
-	
+
 	bc.cancel()
 	bc.ctx, bc.cancel = context.WithCancel(context.Background())
-	
+
 	if oldConn != nil {
 		_ = oldConn.Close()
 	}
@@ -81,6 +82,7 @@ func dialBackend(backendURL string, timeout time.Duration, r *http.Request) (*we
 
 	conn, resp, err := dialer.DialContext(ctx, backendURL, copyHeaders(r))
 	if err != nil {
+		// Логируем только ошибки, успешные подключения не логируем для снижения нагрузки
 		if resp != nil {
 			log.Printf("backend dial failed: %s %v", resp.Status, err)
 		} else {
@@ -88,11 +90,14 @@ func dialBackend(backendURL string, timeout time.Duration, r *http.Request) (*we
 		}
 		return nil, err
 	}
+	// Убрано избыточное логирование успешных подключений
 	return conn, nil
 }
 
 // reconnectToBackend пытается переподключиться к бэкенду
 func reconnectToBackend(r *http.Request, deadline time.Time) (*websocket.Conn, error) {
+	// Логируем только первую попытку переподключения
+	reconnectLogged := false
 	for time.Now().Before(deadline) {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
@@ -100,10 +105,16 @@ func reconnectToBackend(r *http.Request, deadline time.Time) (*websocket.Conn, e
 		}
 		conn, err := dialBackend(backendURL, remaining, r)
 		if err == nil {
+			if !reconnectLogged {
+				log.Printf("reconnected to backend")
+			}
 			return conn, nil
+		}
+		if !reconnectLogged {
+			log.Printf("reconnecting to backend...")
+			reconnectLogged = true
 		}
 		time.Sleep(retryBackoff)
 	}
 	return nil, fmt.Errorf("reconnection timeout")
 }
-
