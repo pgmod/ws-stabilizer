@@ -220,12 +220,16 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	// Если клиент не отключился явно, закрываем бэкенд обычным способом
 	select {
 	case <-clientDisconnected:
+		log.Printf("client disconnected, closing backend")
 		// Уже закрыто с кодом GoingAway
 	default:
+		log.Printf("client not disconnected, closing backend")
 		// Обычное закрытие
 		backend.close()
 	}
 
 	close(errCh)
+	log.Printf("waiting for reconnectWg")
 	reconnectWg.Wait()
+	log.Printf("reconnectWg done")
 }
