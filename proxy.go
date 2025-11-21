@@ -39,6 +39,8 @@ func readFromBackendNoWait(backendConn *BackendConnection, clientConn *websocket
 			if isTimeoutError(err) {
 				continue
 			}
+			// Панические ошибки и ошибки закрытия означают, что соединение с бэкендом мертво
+			// Отправляем ошибку для переподключения
 			safeSendError(errCh, fmt.Errorf("backend read: %w", err), backendConn.ctx, clientCtx)
 			return
 		}
@@ -77,6 +79,7 @@ func readFromClientNoWait(clientConn *websocket.Conn, backendConn *BackendConnec
 			if isTimeoutError(err) {
 				continue
 			}
+			// Панические ошибки и ошибки закрытия означают, что клиент отключился
 			if isCloseError(err) {
 				return true // Клиент отключился
 			}

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -51,9 +50,21 @@ func isTimeoutError(err error) bool {
 	return ok && netErr.Timeout()
 }
 
+// isPanicError проверяет, является ли ошибка паникой из readMessageSafe/writeMessageSafe
+func isPanicError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "read panic:") || strings.Contains(errStr, "write panic:")
+}
+
 // isCloseError проверяет, является ли ошибка нормальным закрытием соединения
 func isCloseError(err error) bool {
-	log.Printf("isCloseError: %v", err)
+	// Панические ошибки также считаются закрытием соединения
+	if isPanicError(err) {
+		return true
+	}
 	return websocket.IsCloseError(err,
 		websocket.CloseNormalClosure,
 		websocket.CloseGoingAway,
